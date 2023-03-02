@@ -1,69 +1,151 @@
-// Next, React
-import { FC, useEffect, useState } from 'react';
-import Link from 'next/link';
-
-// Wallet
-import { useWallet, useConnection } from '@solana/wallet-adapter-react';
-
-// Components
-import { RequestAirdrop } from '../../components/RequestAirdrop';
-import pkg from '../../../package.json';
-
-// Store
-import useUserSOLBalanceStore from '../../stores/useUserSOLBalanceStore';
-
-export const HomeView: FC = ({ }) => {
-  const wallet = useWallet();
-  const { connection } = useConnection();
-
-  const balance = useUserSOLBalanceStore((s) => s.balance)
-  const { getUserSOLBalance } = useUserSOLBalanceStore()
-
-  useEffect(() => {
-    if (wallet.publicKey) {
-      console.log(wallet.publicKey.toBase58())
-      getUserSOLBalance(wallet.publicKey, connection)
+  import React, { useEffect } from 'react'
+  import { useRouter } from 'next/router'
+  import useMangoStore, { serumProgramId } from '../stores/useMangoStore'
+  import {
+    getMarketByBaseSymbolAndKind,
+    getMarketIndexBySymbol,
+  } from '@blockworks-foundation/mango-client'
+  import TradePageGrid from '../components/TradePageGrid'
+  import useLocalStorageState from '../hooks/useLocalStorageState'
+  import AlphaModal, { ALPHA_MODAL_KEY } from '../components/AlphaModal'
+  import { serverSideTranslations } from 'next-i18next/serverSideTranslations'
+  import { actionsSelector, marketConfigSelector } from '../stores/selectors'
+  import { PublicKey } from '@solana/web3.js'
+  import dayjs from 'dayjs'
+  import { tokenPrecision } from 'utils'
+  import AccountIntro from 'components/AccountIntro'
+  
+  export async function getStaticProps({ locale }) {
+    return {
+      props: {
+        ...(await serverSideTranslations(locale, [
+          'common',
+          'delegate',
+          'tv-chart',
+          'alerts',
+          'share-modal',
+          'profile',
+        ])),
+        // Will be passed to the page component as props
+      },
     }
-  }, [wallet.publicKey, connection, getUserSOLBalance])
-
-  return (
-
-    <div className="md:hero mx-auto p-4">
-      <div className="md:hero-content flex flex-col">
-        <div className='mt-6'>
-        <div className='text-sm font-normal align-bottom text-right text-slate-600 mt-4'>v{pkg.version}</div>
-        <h1 className="text-center text-5xl md:pl-12 font-bold text-transparent bg-clip-text bg-gradient-to-br from-indigo-500 to-fuchsia-500 mb-4">
-          Solana Next
-        </h1>
-        </div>
-        <h4 className="md:w-full text-2x1 md:text-4xl text-center text-slate-300 my-2">
-          <p>Unleash the full power of blockchain with Solana and Next.js 13.</p>
-          <p className='text-slate-500 text-2x1 leading-relaxed'>Full-stack Solana applications made easy.</p>
-        </h4>
-        <div className="relative group">
-          <div className="absolute -inset-0.5 bg-gradient-to-r from-indigo-500 to-indigo-500 rounded-lg blur opacity-40 animate-tilt"></div>
-          <div className="max-w-md mx-auto mockup-code bg-primary border-2 border-[#5252529f] p-6 px-10 my-2">
-            <pre data-prefix=">">
-              <code className="truncate">{`npx create-solana-dapp <dapp-name>`} </code>
-            </pre>
-          </div>
-        </div>
-        <div className="flex flex-col mt-2">
-          <RequestAirdrop />
-          <h4 className="md:w-full text-2xl text-slate-300 my-2">
-          {wallet &&
-          <div className="flex flex-row justify-center">
-            <div>
-              {(balance || 0).toLocaleString()}
-              </div>
-              <div className='text-slate-600 ml-2'>
-                SOL
-              </div>
-          </div>
+  }
+  
+  const HomeView: React.FC = () => {
+    const [alphaAccepted] = useLocalStorageState(ALPHA_MODAL_KEY, false)
+    const setMangoStore = useMangoStore((s) => s.set)
+    const marketConfig = useMangoStore(marketConfigSelector)
+    const actions = useMangoStore(actionsSelector)
+    const router = useRouter()
+    const [savedLanguage] = useLocalStorageState('language', '')
+    const { pubkey } = router.query
+  
+    useEffect(() => {
+      dayjs.locale(savedLanguage == 'zh_tw' ? 'zh-tw' : savedLanguage)
+    })
+  
+    useEffect(() => {
+      async function loadUnownedMangoAccount() {
+        if (!pubkey) return
+        try {
+          const mangoGroup = useMangoStore.getState().selectedMangoGroup.current
+          const unownedMangoAccountPubkey = new PublicKey(pubkey)
+          const mangoClient = useMangoStore.getState().connection.client
+          if (mangoGroup) {
+            const unOwnedMangoAccount = await mangoClient.getMangoAccount(
+              unownedMangoAccountPubkey,
+              serumProgramId
+            )
+  
+            setMangoStore((state) => {
+              state.selectedMangoAccount.current = unOwnedMangoAccount
+              state.selectedMangoAccount.initialLoad = false
+            })
+            actions.fetchTradeHistory()
+            actions.reloadOrders()
+            // setResetOnLeave(true)
           }
-          </h4>
-        </div>
-      </div>
-    </div>
-  );
-};
+        } catch (error) {
+          router.push('/account')
+        }
+      }
+  
+      if (pubkey) {
+        loadUnownedMangoAccount()
+      }
+    }, [pubkey])
+  
+    useEffect(() => {
+      const name = decodeURIComponent(router.asPath).split('name=')[1]
+      const mangoGroup = useMangoStore.getState().selectedMangoGroup.current
+      const groupConfig = useMangoStore.getState().selectedMangoGroup.config
+  
+      let marketQueryParam, marketBaseSymbol, marketType, newMarket, marketIndex
+      if (name && groupConfig) {
+        marketQueryParam = name.toString().split(/-|\//)
+        marketBaseSymbol = marketQueryParam[0]
+        marketType = marketQueryParam[1]?.includes('spot')
+  
+        newMarket = getMarketByBaseSymbolAndKind(
+          groupConfig,
+          marketBaseSymbol.toUpperCase(),
+          marketType
+        )
+        marketIndex = getMarketIndexBySymbol(
+          groupConfig,
+          marketBaseSymbol.toUpperCase()
+        )
+  
+        if (!newMarket?.baseSymbol) {
+          router.push('/')
+          return
+        }
+      }
+  
+      if (newMarket?.name === marketConfig?.name) return
+  
+      if (name && mangoGroup) {
+        const mangoCache = useMangoStore.getState().selectedMangoGroup.cache
+        setMangoStore((state) => {
+          state.selectedMarket.kind = marketType
+          if (newMarket.name !== marketConfig.name) {
+            state.selectedMarket.config = newMarket
+            state.tradeForm.price = mangoCache
+              ? parseFloat(
+                  mangoGroup.getPrice(marketIndex, mangoCache).toFixed(2)
+                )
+              : ''
+            if (state.tradeForm.quoteSize) {
+              state.tradeForm.baseSize = Number(
+                (
+                  state.tradeForm.quoteSize / Number(state.tradeForm.price)
+                ).toFixed(tokenPrecision[newMarket.baseSymbol])
+              )
+            }
+          }
+        })
+      } else if (name && marketConfig) {
+        // if mangoGroup hasn't loaded yet, set the marketConfig to the query param if different
+        if (newMarket.name !== marketConfig.name) {
+          setMangoStore((state) => {
+            state.selectedMarket.kind = marketType
+            state.selectedMarket.config = newMarket
+          })
+        }
+      }
+    }, [router, marketConfig])
+  
+    return (
+      <>
+        <TradePageGrid />
+        {!alphaAccepted && (
+          <AlphaModal isOpen={!alphaAccepted} onClose={() => {}} />
+        )}
+  
+        <AccountIntro />
+      </>
+    )
+  }
+  
+  export default HomeView
+  
