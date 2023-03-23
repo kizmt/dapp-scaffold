@@ -2,7 +2,6 @@ import create, { State } from "zustand";
 import produce from "immer";
 
 interface NotificationStore extends State {
-  notificationIdCounter: number
   notifications: Array<{
     type: string
     message: string
